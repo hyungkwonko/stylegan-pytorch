@@ -22,6 +22,9 @@ def requires_grad(model, flag=True):
         p.requires_grad = flag
 
 
+# In progressive gan paper author used running average of generator when infer samples.
+# accumulate() calculates running average and save average to g_running.
+# https://github.com/rosinality/style-based-gan-pytorch/issues/8
 def accumulate(model1, model2, decay=0.999):
     par1 = dict(model1.named_parameters())
     par2 = dict(model2.named_parameters())
@@ -51,13 +54,14 @@ def train(args, dataset, generator, discriminator):
     )
     data_loader = iter(loader)
 
+    # manupulate the learing rates of two optimizers
     adjust_lr(g_optimizer, args.lr.get(resolution, 0.001))
     adjust_lr(d_optimizer, args.lr.get(resolution, 0.001))
 
-    pbar = tqdm(range(3_000_000))
+    pbar = tqdm(range(3_000_000))  # == 3,000,000 for ease of reading
 
-    requires_grad(generator, False)
-    requires_grad(discriminator, True)
+    requires_grad(generator, False)  # does not back-prop generator
+    requires_grad(discriminator, True)  # do back-prop discriminator
 
     disc_loss_val = 0
     gen_loss_val = 0
@@ -66,24 +70,25 @@ def train(args, dataset, generator, discriminator):
     alpha = 0
     used_sample = 0
 
-    max_step = int(math.log2(args.max_size)) - 2
+    max_step = int(math.log2(args.max_size)) - 2  # -2 since the image resolution starts from 8*8
     final_progress = False
 
-    for i in pbar:
-        discriminator.zero_grad()
+    for i in pbar:  # range(3,000,000)
+        # TRAIN DISCRIMINATOR
+        discriminator.zero_grad()  # initialize gradient of discriminator to 0
 
         alpha = min(1, 1 / args.phase * (used_sample + 1))
 
         if (resolution == args.init_size and args.ckpt is None) or final_progress:
-            alpha = 1
+            alpha = 1  # flag to train the low resolution layer (8*8)
 
         if used_sample > args.phase * 2:
             used_sample = 0
             step += 1
 
-            if step > max_step:
+            if step > max_step:  # max_step = log(2^10) - 2 = 8
                 step = max_step
-                final_progress = True
+                final_progress = True  # set flag
                 ckpt_step = step + 1
 
             else:
@@ -94,7 +99,7 @@ def train(args, dataset, generator, discriminator):
 
             loader = sample_data(
                 dataset, args.batch.get(resolution, args.batch_default), resolution
-            )
+            )  # load data batch with given (changing) resolution
             data_loader = iter(loader)
 
             torch.save(
@@ -120,8 +125,8 @@ def train(args, dataset, generator, discriminator):
 
         used_sample += real_image.shape[0]
 
-        b_size = real_image.size(0)
-        real_image = real_image.cuda()
+        b_size = real_image.size(0)  # batch_size
+        real_image = real_image.cuda()  # data batch
 
         if args.loss == 'wgan-gp':
             real_predict = discriminator(real_image, step=step, alpha=alpha)
@@ -178,7 +183,7 @@ def train(args, dataset, generator, discriminator):
             ).mean()
             grad_penalty = 10 * grad_penalty
             grad_penalty.backward()
-            if i%10 == 0:
+            if i % 10 == 0:
                 grad_loss_val = grad_penalty.item()
                 disc_loss_val = (-real_predict + fake_predict).item()
 
@@ -188,13 +193,14 @@ def train(args, dataset, generator, discriminator):
             if i%10 == 0:
                 disc_loss_val = (real_predict + fake_predict).item()
 
-        d_optimizer.step()
+        d_optimizer.step()  # update discriminator
 
+        # TRAIN GENERATOR
         if (i + 1) % n_critic == 0:
             generator.zero_grad()
 
-            requires_grad(generator, True)
-            requires_grad(discriminator, False)
+            requires_grad(generator, True)  # do back-prop generator
+            requires_grad(discriminator, False)  # does not back-prop discriminator
 
             fake_image = generator(gen_in2, step=step, alpha=alpha)
 
@@ -216,6 +222,7 @@ def train(args, dataset, generator, discriminator):
             requires_grad(generator, False)
             requires_grad(discriminator, True)
 
+        # save generated images for every 100 iter
         if (i + 1) % 100 == 0:
             images = []
 
@@ -237,6 +244,7 @@ def train(args, dataset, generator, discriminator):
                 range=(-1, 1),
             )
 
+        # save model checkpoint
         if (i + 1) % 10000 == 0:
             torch.save(
                 g_running.state_dict(), f'checkpoint/{str(i + 1).zfill(6)}.model'
@@ -253,7 +261,7 @@ def train(args, dataset, generator, discriminator):
 if __name__ == '__main__':
     code_size = 512
     batch_size = 16
-    n_critic = 1
+    n_critic = 1  # train generator for each iter (discriminator 1 update -> generator 1 update)
 
     parser = argparse.ArgumentParser(description='Progressive Growing of GANs')
 
@@ -310,6 +318,7 @@ if __name__ == '__main__':
 
     accumulate(g_running, generator.module, 0)
 
+    # load model parameter if exists
     if args.ckpt is not None:
         ckpt = torch.load(args.ckpt)
 
@@ -319,6 +328,7 @@ if __name__ == '__main__':
         g_optimizer.load_state_dict(ckpt['g_optimizer'])
         d_optimizer.load_state_dict(ckpt['d_optimizer'])
 
+    # image transformation
     transform = transforms.Compose(
         [
             transforms.RandomHorizontalFlip(),
@@ -327,10 +337,14 @@ if __name__ == '__main__':
         ]
     )
 
+    # save the resolution info to the key
     dataset = MultiResolutionDataset(args.path, transform)
 
     if args.sched:
         args.lr = {128: 0.0015, 256: 0.002, 512: 0.003, 1024: 0.003}
+        # different batch size for different resolution
+        # this is required since we train each layer progressively (as in PG-GAN)
+        # use larger batch size for low resolution (to take advantage of the RAM usage)
         args.batch = {4: 512, 8: 256, 16: 128, 32: 64, 64: 32, 128: 32, 256: 32}
 
     else:
@@ -339,6 +353,6 @@ if __name__ == '__main__':
 
     args.gen_sample = {512: (8, 4), 1024: (4, 2)}
 
-    args.batch_default = 32
+    args.batch_default = 8 # 32
 
     train(args, dataset, generator, discriminator)

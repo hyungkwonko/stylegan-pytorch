@@ -26,7 +26,7 @@ def get_mean_style(generator, device):
 @torch.no_grad()
 def sample(generator, step, mean_style, n_sample, device):
     image = generator(
-        torch.randn(n_sample, 512).to(device),
+        torch.randn(n_sample, 512).to(device),  # (n_sample = batch, 512)
         step=step,
         alpha=1,
         mean_style=mean_style,
@@ -37,8 +37,8 @@ def sample(generator, step, mean_style, n_sample, device):
 
 @torch.no_grad()
 def style_mixing(generator, step, mean_style, n_source, n_target, device):
-    source_code = torch.randn(n_source, 512).to(device)
-    target_code = torch.randn(n_target, 512).to(device)
+    source_code = torch.randn(n_source, 512).to(device)  # (batch, 512)
+    target_code = torch.randn(n_target, 512).to(device)  # (batch, 512)
     
     shape = 4 * 2 ** step
     alpha = 1
@@ -63,8 +63,8 @@ def style_mixing(generator, step, mean_style, n_source, n_target, device):
             style_weight=0.7,
             mixing_range=(0, 1),
         )
-        images.append(target_image[i].unsqueeze(0))
-        images.append(image)
+        images.append(target_image[i].unsqueeze(0))  # append target image
+        images.append(image)  # append style-mixed images
 
     images = torch.cat(images, 0)
     
@@ -73,7 +73,7 @@ def style_mixing(generator, step, mean_style, n_source, n_target, device):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--size', type=int, default=1024, help='size of the image')
+    parser.add_argument('--size', type=int, default=1024, help='size of the image')  # https://github.com/rosinality/style-based-gan-pytorch/issues/49
     parser.add_argument('--n_row', type=int, default=3, help='number of rows of sample matrix')
     parser.add_argument('--n_col', type=int, default=5, help='number of columns of sample matrix')
     parser.add_argument('path', type=str, help='path to checkpoint file')
@@ -83,12 +83,12 @@ if __name__ == '__main__':
     device = 'cuda'
 
     generator = StyledGenerator(512).to(device)
-    generator.load_state_dict(torch.load(args.path)['g_running'])
-    generator.eval()
+    generator.load_state_dict(torch.load(args.path)['g_running'])  # load model
+    generator.eval()  # set for eval (no grad update)
 
-    mean_style = get_mean_style(generator, device)
+    mean_style = get_mean_style(generator, device)  # shape = (1, 512)
 
-    step = int(math.log(args.size, 2)) - 2
+    step = int(math.log(args.size, 2)) - 2  # -2 since it starts from 4*4 resolution
     
     img = sample(generator, step, mean_style, args.n_row * args.n_col, device)
     utils.save_image(img, 'sample.png', nrow=args.n_col, normalize=True, range=(-1, 1))

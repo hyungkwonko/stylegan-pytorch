@@ -11,12 +11,12 @@ import random
 
 
 def init_linear(linear):
-    init.xavier_normal(linear.weight)
+    init.xavier_normal(linear.weight)  # Xavier init
     linear.bias.data.zero_()
 
 
 def init_conv(conv, glu=True):
-    init.kaiming_normal(conv.weight)
+    init.kaiming_normal(conv.weight)  # He init
     if conv.bias is not None:
         conv.bias.data.zero_()
 
@@ -42,7 +42,7 @@ class EqualLR:
 
         return fn
 
-    def __call__(self, module, input):
+    def __call__(self, module, input):  # we do not need param 'input', right?
         weight = self.compute_weight(module)
         setattr(module, self.name, weight)
 
@@ -111,7 +111,7 @@ class FusedDownsample(nn.Module):
         return out
 
 
-class PixelNorm(nn.Module):
+class PixelNorm(nn.Module):  # pixel-wise normalization (shape: channelwise_mean([2, 2, 2, 2]) -> [2, 1, 2, 2])
     def __init__(self):
         super().__init__()
 
@@ -166,10 +166,10 @@ class Blur(nn.Module):
     def __init__(self, channel):
         super().__init__()
 
-        weight = torch.tensor([[1, 2, 1], [2, 4, 2], [1, 2, 1]], dtype=torch.float32)
-        weight = weight.view(1, 1, 3, 3)
-        weight = weight / weight.sum()
-        weight_flip = torch.flip(weight, [2, 3])
+        weight = torch.tensor([[1, 2, 1], [2, 4, 2], [1, 2, 1]], dtype=torch.float32)  # shape = [3, 3]
+        weight = weight.view(1, 1, 3, 3)  # [1, 1, 3, 3]
+        weight = weight / weight.sum()  # normalization
+        weight_flip = torch.flip(weight, [2, 3])  # ?
 
         self.register_buffer('weight', weight.repeat(channel, 1, 1, 1))
         self.register_buffer('weight_flip', weight_flip.repeat(channel, 1, 1, 1))
@@ -192,6 +192,7 @@ class EqualConv2d(nn.Module):
         return self.conv(input)
 
 
+# for the mapping network (8 MLP layers)
 class EqualLinear(nn.Module):
     def __init__(self, in_dim, out_dim):
         super().__init__()
@@ -200,6 +201,10 @@ class EqualLinear(nn.Module):
         linear.weight.data.normal_()
         linear.bias.data.zero_()
 
+        # why doing this? please refer to the below url
+        # https://github.com/rosinality/style-based-gan-pytorch/issues/75
+        # https://towardsdatascience.com/progressively-growing-gans-9cb795caebee#:~:text=The%20idea%20behind%20equalized%20learning,a%20similar%20scale%20during%20training.
+        # https://curt-park.github.io/2018-05-09/pggan/
         self.linear = equal_lr(linear)
 
     def forward(self, input):
@@ -271,12 +276,12 @@ class AdaptiveInstanceNorm(nn.Module):
         self.norm = nn.InstanceNorm2d(in_channel)
         self.style = EqualLinear(style_dim, in_channel * 2)
 
-        self.style.linear.bias.data[:in_channel] = 1
-        self.style.linear.bias.data[in_channel:] = 0
+        self.style.linear.bias.data[:in_channel] = 1  # init mean = 1
+        self.style.linear.bias.data[in_channel:] = 0  # init var = 0
 
     def forward(self, input, style):
-        style = self.style(style).unsqueeze(2).unsqueeze(3)
-        gamma, beta = style.chunk(2, 1)
+        style = self.style(style).unsqueeze(2).unsqueeze(3)  # shape (x,y) -> (x, y, 1, 1)
+        gamma, beta = style.chunk(2, 1)  # split into two subsets
 
         out = self.norm(input)
         out = gamma * out + beta
@@ -294,15 +299,16 @@ class NoiseInjection(nn.Module):
         return image + self.weight * noise
 
 
+# class for learned constant, backward pass will automatically update the value (1, channel, 4, 4)
 class ConstantInput(nn.Module):
     def __init__(self, channel, size=4):
         super().__init__()
 
-        self.input = nn.Parameter(torch.randn(1, channel, size, size))
+        self.input = nn.Parameter(torch.randn(1, channel, size, size))  # (1, channel, 4, 4) 
 
     def forward(self, input):
         batch = input.shape[0]
-        out = self.input.repeat(batch, 1, 1, 1)
+        out = self.input.repeat(batch, 1, 1, 1)  # shape: (1, channel, size, size) -> (batch, channel, size, size)
 
         return out
 
@@ -323,7 +329,6 @@ class StyledConvBlock(nn.Module):
 
         if initial:
             self.conv1 = ConstantInput(in_channel)
-
         else:
             if upsample:
                 if fused:
@@ -453,9 +458,10 @@ class StyledGenerator(nn.Module):
         super().__init__()
 
         self.generator = Generator(code_dim)
+        # print(self.generator)
 
         layers = [PixelNorm()]
-        for i in range(n_mlp):
+        for i in range(n_mlp):  # 8 layers
             layers.append(EqualLinear(code_dim, code_dim))
             layers.append(nn.LeakyReLU(0.2))
 

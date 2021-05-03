@@ -16,6 +16,8 @@ Usage:
 You should prepare lmdb dataset
 
 > python prepare_data.py --out LMDB_PATH --n_worker N_WORKER DATASET_PATH
+> python prepare_data.py --out=lmdb/ --n_worker 40 data/
+
 
 This will convert images to jpeg and pre-resizes it. (For example, 8/16/32/64/128/256/512/1024) Then you can train StyleGAN.
 
@@ -26,6 +28,7 @@ for celebA
 for FFHQ
 
 > python train.py --mixing --loss r1 --sched LMDB_PATH
+> python train.py --mixing --sched lmdb/
 
 Resolution | Model & Optimizer 
 -----------|-------------------
