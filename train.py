@@ -77,7 +77,7 @@ def train(args, dataset, generator, discriminator):
         # TRAIN DISCRIMINATOR
         discriminator.zero_grad()  # initialize gradient of discriminator to 0
 
-        alpha = min(1, 1 / args.phase * (used_sample + 1))
+        alpha = min(1, 1 / args.phase * (used_sample + 1))  # alpha increaseas from 0 to 1 (PG-GAN)
 
         if (resolution == args.init_size and args.ckpt is None) or final_progress:  # if training from beginning or final_progress
             alpha = 1
@@ -92,7 +92,7 @@ def train(args, dataset, generator, discriminator):
                 ckpt_step = step + 1
 
             else:
-                alpha = 0
+                alpha = 0  # move on to next (resolution) step
                 ckpt_step = step
 
             resolution = 4 * 2 ** step

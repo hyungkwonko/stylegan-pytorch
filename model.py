@@ -53,7 +53,8 @@ def equal_lr(module, name='weight'):
 
     return module
 
-
+# bilinear upsample + conv
+# https://github.com/rosinality/style-based-gan-pytorch/issues/107
 class FusedUpsample(nn.Module):
     def __init__(self, in_channel, out_channel, kernel_size, padding=0):
         super().__init__()
@@ -62,7 +63,7 @@ class FusedUpsample(nn.Module):
         bias = torch.zeros(out_channel)
 
         fan_in = in_channel * kernel_size * kernel_size
-        self.multiplier = sqrt(2 / fan_in)
+        self.multiplier = sqrt(2 / fan_in)  # used in He init
 
         self.weight = nn.Parameter(weight)
         self.bias = nn.Parameter(bias)
@@ -70,13 +71,15 @@ class FusedUpsample(nn.Module):
         self.pad = padding
 
     def forward(self, input):
-        weight = F.pad(self.weight * self.multiplier, [1, 1, 1, 1])
+        weight = F.pad(self.weight * self.multiplier, [1, 1, 1, 1])  # surround <self.weight> with 0 (1 padding)
+        # e.g., [[1, 2], [3, 4]] --> [[0, 0, 0, 0],[0, 1, 2, 0],[0, 3, 4, 0],[0, 0, 0, 0]]
         weight = (
-            weight[:, :, 1:, 1:]
-            + weight[:, :, :-1, 1:]
-            + weight[:, :, 1:, :-1]
-            + weight[:, :, :-1, :-1]
-        ) / 4
+            weight[:, :, 1:, 1:]  # lower right [[1,2,0], [3,4,0],[0,0,0]]
+            + weight[:, :, :-1, 1:]  # upper right [[0,0,0], [1,2,0],[3,4,0]]
+            + weight[:, :, 1:, :-1]  # lower left
+            + weight[:, :, :-1, :-1]  # upper left
+        ) / 4  # add and divide by 4
+        # this is fusing... 
 
         out = F.conv_transpose2d(input, weight, self.bias, stride=2, padding=self.pad)
 
@@ -120,6 +123,7 @@ class PixelNorm(nn.Module):  # pixel-wise normalization (shape: channelwise_mean
         return input / torch.sqrt(torch.mean(input ** 2, dim=1, keepdim=True) + 1e-8)
 
 
+# https://github.com/rosinality/style-based-gan-pytorch/issues/89
 class BlurFunctionBackward(Function):
     @staticmethod
     def forward(ctx, grad_output, kernel, kernel_flip):
@@ -334,6 +338,7 @@ class StyledConvBlock(nn.Module):
             if upsample:
                 if fused:  # for high resolution layers (128, 256, 512, 1024)
                     self.conv1 = nn.Sequential(
+                        # use fuse from here to reduce memory usage
                         FusedUpsample(
                             in_channel, out_channel, kernel_size, padding=padding
                         ),
@@ -447,11 +452,17 @@ class Generator(nn.Module):
             out = conv(out, style_step, noise[i])
 
             if i == step:  # if i == step convert it to RGB
-                out = to_rgb(out)
+                # print("prev: ", out.shape)
+                out = to_rgb(out)  # (batch, channel (e.g., 512, 256), h, w) --> (batch, 3, h, w)
+                # print("next: ", out.shape)
 
                 if i > 0 and 0 <= alpha < 1:
                     skip_rgb = self.to_rgb[i - 1](out_prev)
-                    skip_rgb = F.interpolate(skip_rgb, scale_factor=2, mode='nearest')
+                    # print("skip_prev: ", skip_rgb.shape)  # (batch, 3, h/2, w/2)
+                    skip_rgb = F.interpolate(skip_rgb, scale_factor=2, mode='nearest')  # doubling using scaling
+                    # F.interpolation example
+                    # [[1, 2], [3, 4]] --> [[1, 1, 2, 2], [1, 1, 2, 2], [3, 3, 4, 4], [3, 3, 4, 4]]
+                    # print("skip_next: ", skip_rgb.shape)  # (batch, 3, h, w)
                     out = (1 - alpha) * skip_rgb + alpha * out
 
                 break
