@@ -34,7 +34,7 @@ def accumulate(model1, model2, decay=0.999):
 
 
 def sample_data(dataset, batch_size, image_size=4):
-    dataset.resolution = image_size
+    dataset.resolution = image_size  # can change resolution
     loader = DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=1, drop_last=True)
 
     return loader
@@ -51,7 +51,7 @@ def train(args, dataset, generator, discriminator):
     resolution = 4 * 2 ** step
     loader = sample_data(
         dataset, args.batch.get(resolution, args.batch_default), resolution
-    )
+    )  # load data batch with given (changing) resolution
     data_loader = iter(loader)
 
     # manupulate the learing rates of two optimizers
@@ -79,16 +79,16 @@ def train(args, dataset, generator, discriminator):
 
         alpha = min(1, 1 / args.phase * (used_sample + 1))
 
-        if (resolution == args.init_size and args.ckpt is None) or final_progress:
-            alpha = 1  # flag to train the low resolution layer (8*8)
+        if (resolution == args.init_size and args.ckpt is None) or final_progress:  # if training from beginning or final_progress
+            alpha = 1
 
-        if used_sample > args.phase * 2:
-            used_sample = 0
-            step += 1
+        if used_sample > args.phase * 2:  # used_for_training > 600_000 * 2
+            used_sample = 0  # set to zero (since we are going to train the next high-resolution layer)
+            step += 1  # high resolution layer
 
             if step > max_step:  # max_step = log(2^10) - 2 = 8
                 step = max_step
-                final_progress = True  # set flag
+                final_progress = True
                 ckpt_step = step + 1
 
             else:
@@ -116,6 +116,7 @@ def train(args, dataset, generator, discriminator):
             adjust_lr(g_optimizer, args.lr.get(resolution, 0.001))
             adjust_lr(d_optimizer, args.lr.get(resolution, 0.001))
 
+        # TRAIN DISCRIMINATOR ON REAL IMAGES
         try:
             real_image = next(data_loader)
 
@@ -123,10 +124,10 @@ def train(args, dataset, generator, discriminator):
             data_loader = iter(loader)
             real_image = next(data_loader)
 
-        used_sample += real_image.shape[0]
+        used_sample += real_image.shape[0]  # used_sample_num += batch size
 
         b_size = real_image.size(0)  # batch_size
-        real_image = real_image.cuda()  # data batch
+        real_image = real_image.cuda()  # data batch to cuda
 
         if args.loss == 'wgan-gp':
             real_predict = discriminator(real_image, step=step, alpha=alpha)
@@ -150,18 +151,21 @@ def train(args, dataset, generator, discriminator):
             if i%10 == 0:
                 grad_loss_val = grad_penalty.item()
 
-        if args.mixing and random.random() < 0.9:
+        # TRAIN DISCRIMINATOR ON FAKE (GENERATED) IMAGES
+        # Mixing regularization (StyleGAN1 paper, Sect. 3.1 Style Mixing)
+        # https://github.com/rosinality/style-based-gan-pytorch/issues/11
+        if args.mixing and random.random() < 0.9:  # why does it set to 0.9?
             gen_in11, gen_in12, gen_in21, gen_in22 = torch.randn(
                 4, b_size, code_size, device='cuda'
             ).chunk(4, 0)
-            gen_in1 = [gen_in11.squeeze(0), gen_in12.squeeze(0)]
+            gen_in1 = [gen_in11.squeeze(0), gen_in12.squeeze(0)]  # [torch.Size([b_size, 512]), torch.Size([b_size, 512])]
             gen_in2 = [gen_in21.squeeze(0), gen_in22.squeeze(0)]
 
         else:
             gen_in1, gen_in2 = torch.randn(2, b_size, code_size, device='cuda').chunk(
                 2, 0
             )
-            gen_in1 = gen_in1.squeeze(0)
+            gen_in1 = gen_in1.squeeze(0)  # torch.Size([b_size, 512])
             gen_in2 = gen_in2.squeeze(0)
 
         fake_image = generator(gen_in1, step=step, alpha=alpha)

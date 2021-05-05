@@ -21,6 +21,7 @@ def init_conv(conv, glu=True):
         conv.bias.data.zero_()
 
 
+# ?????
 class EqualLR:
     def __init__(self, name):
         self.name = name
@@ -203,7 +204,6 @@ class EqualLinear(nn.Module):
 
         # why doing this? please refer to the below url
         # https://github.com/rosinality/style-based-gan-pytorch/issues/75
-        # https://towardsdatascience.com/progressively-growing-gans-9cb795caebee#:~:text=The%20idea%20behind%20equalized%20learning,a%20similar%20scale%20during%20training.
         # https://curt-park.github.io/2018-05-09/pggan/
         self.linear = equal_lr(linear)
 
@@ -243,14 +243,14 @@ class ConvBlock(nn.Module):
         if downsample:
             if fused:
                 self.conv2 = nn.Sequential(
-                    Blur(out_channel),
+                    Blur(out_channel),  # blur first
                     FusedDownsample(out_channel, out_channel, kernel2, padding=pad2),
                     nn.LeakyReLU(0.2),
                 )
 
             else:
                 self.conv2 = nn.Sequential(
-                    Blur(out_channel),
+                    Blur(out_channel),  # blur first
                     EqualConv2d(out_channel, out_channel, kernel2, padding=pad2),
                     nn.AvgPool2d(2),
                     nn.LeakyReLU(0.2),
@@ -296,7 +296,7 @@ class NoiseInjection(nn.Module):
         self.weight = nn.Parameter(torch.zeros(1, channel, 1, 1))
 
     def forward(self, image, noise):
-        return image + self.weight * noise
+        return image + self.weight * noise  # multiply to all batches
 
 
 # class for learned constant, backward pass will automatically update the value (1, channel, 4, 4)
@@ -304,6 +304,7 @@ class ConstantInput(nn.Module):
     def __init__(self, channel, size=4):
         super().__init__()
 
+        # constant is set to random at first, but learned through back-propagation
         self.input = nn.Parameter(torch.randn(1, channel, size, size))  # (1, channel, 4, 4) 
 
     def forward(self, input):
@@ -327,11 +328,11 @@ class StyledConvBlock(nn.Module):
     ):
         super().__init__()
 
-        if initial:
+        if initial:  # D. Remove Traditional Input (use learned constant instead) (4*4 resolution)
             self.conv1 = ConstantInput(in_channel)
         else:
             if upsample:
-                if fused:
+                if fused:  # for high resolution layers (128, 256, 512, 1024)
                     self.conv1 = nn.Sequential(
                         FusedUpsample(
                             in_channel, out_channel, kernel_size, padding=padding
@@ -339,7 +340,7 @@ class StyledConvBlock(nn.Module):
                         Blur(out_channel),
                     )
 
-                else:
+                else:  # for low resolution layers (8, 16, 32, 64)
                     self.conv1 = nn.Sequential(
                         nn.Upsample(scale_factor=2, mode='nearest'),
                         EqualConv2d(
@@ -348,7 +349,7 @@ class StyledConvBlock(nn.Module):
                         Blur(out_channel),
                     )
 
-            else:
+            else:  # not used ??
                 self.conv1 = EqualConv2d(
                     in_channel, out_channel, kernel_size, padding=padding
                 )
@@ -363,6 +364,7 @@ class StyledConvBlock(nn.Module):
         self.lrelu2 = nn.LeakyReLU(0.2)
 
     def forward(self, input, style, noise):
+        # Figure 1-(b): Style-based generator
         out = self.conv1(input)
         out = self.noise1(out, noise)
         out = self.lrelu1(out)
@@ -382,7 +384,7 @@ class Generator(nn.Module):
 
         self.progression = nn.ModuleList(
             [
-                StyledConvBlock(512, 512, 3, 1, initial=True),  # 4
+                StyledConvBlock(512, 512, 3, 1, initial=True),  # 4 (initial=True)
                 StyledConvBlock(512, 512, 3, 1, upsample=True),  # 8
                 StyledConvBlock(512, 512, 3, 1, upsample=True),  # 16
                 StyledConvBlock(512, 512, 3, 1, upsample=True),  # 32
@@ -413,10 +415,14 @@ class Generator(nn.Module):
     def forward(self, style, noise, step=0, alpha=-1, mixing_range=(-1, -1)):
         out = noise[0]
 
-        if len(style) < 2:
+        if len(style) < 2:  # no style mixing
             inject_index = [len(self.progression) + 1]
-
-        else:
+        
+        # F. Mixing Regularization (which uses two latent codes for generation)
+        else:  # sample (len(style) - 1) elements from [0, 1, ..., step-1]
+            # reason for len(style) - 1? implemented in a way that to mix more than 2 styles
+            # default len(style)-1 = 1 (the transition point)
+            # why need sorting? https://github.com/rosinality/style-based-gan-pytorch/issues/100
             inject_index = sorted(random.sample(list(range(step)), len(style) - 1))
 
         crossover = 0
@@ -426,21 +432,21 @@ class Generator(nn.Module):
                 if crossover < len(inject_index) and i > inject_index[crossover]:
                     crossover = min(crossover + 1, len(style))
 
-                style_step = style[crossover]
+                style_step = style[crossover]  # style (W) of current step
 
             else:
-                if mixing_range[0] <= i <= mixing_range[1]:
-                    style_step = style[1]
+                if mixing_range[0] <= i <= mixing_range[1]:  # if mixing range set explicitly
+                    style_step = style[1]  # use second style (W2)
 
                 else:
-                    style_step = style[0]
+                    style_step = style[0]  # use first style (W1)
 
             if i > 0 and step > 0:
                 out_prev = out
                 
             out = conv(out, style_step, noise[i])
 
-            if i == step:
+            if i == step:  # if i == step convert it to RGB
                 out = to_rgb(out)
 
                 if i > 0 and 0 <= alpha < 1:
@@ -460,8 +466,8 @@ class StyledGenerator(nn.Module):
         self.generator = Generator(code_dim)
         # print(self.generator)
 
-        layers = [PixelNorm()]
-        for i in range(n_mlp):  # 8 layers
+        layers = [PixelNorm()]  # starts with PixelNorm
+        for i in range(n_mlp):  # 8-layer MLP to generate 'W' from 'Z'
             layers.append(EqualLinear(code_dim, code_dim))
             layers.append(nn.LeakyReLU(0.2))
 
@@ -469,7 +475,7 @@ class StyledGenerator(nn.Module):
 
     def forward(
         self,
-        input,
+        input,  # torch.Size([b_size, 512]) OR [torch.Size([b_size, 512]), torch.Size([b_size, 512])]
         noise=None,
         step=0,
         alpha=-1,
@@ -481,7 +487,8 @@ class StyledGenerator(nn.Module):
         if type(input) not in (list, tuple):
             input = [input]
 
-        for i in input:
+        # C. Mapping Network: pass throught 8-layer MLP to get 'W' latent variables (Z --> W)
+        for i in input:  # could be 2 inputs for mixing regularization
             styles.append(self.style(i))
 
         batch = input[0].shape[0]
@@ -489,10 +496,12 @@ class StyledGenerator(nn.Module):
         if noise is None:
             noise = []
 
+            # E. Add Noise Inputs: stochastic noise in StyleGAN1 paper
             for i in range(step + 1):
                 size = 4 * 2 ** i
                 noise.append(torch.randn(batch, 1, size, size, device=input[0].device))
 
+        # used in generation (generate.py)
         if mean_style is not None:
             styles_norm = []
 
@@ -578,6 +587,6 @@ class Discriminator(nn.Module):
 
         out = out.squeeze(2).squeeze(2)
         # print(input.size(), out.size(), step)
-        out = self.linear(out)
+        out = self.linear(out)  # shape [512] -> [1] for discrimination
 
         return out
